@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lila Inventory — Live View</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f4f2; }
+  .card { background: white; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.07); }
+  .stockout-alert { background: #fef2f2; border-left: 4px solid #ef4444; }
+  .lowstock-alert { background: #fffbeb; border-left: 4px solid #f59e0b; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-thumb { background: #d1c4d3; border-radius: 3px; }
+  .chart-container { position: relative; height: 260px; }
+  .proj-chart-container { position: relative; height: 300px; }
+  .nav-tab { padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-bottom: 3px solid transparent; color: #6b7280; transition: color .15s, border-color .15s; white-space:nowrap; }
+  .nav-tab.active { color: #6b21a8; border-bottom-color: #6b21a8; }
+  .nav-tab:hover:not(.active) { color: #374151; }
+  .mt-active  { background:#6b4f6e; color:white; }
+  .mt-inactive{ background:#f3f0f3; color:#4b5563; }
+  /* PO sidebar */
+  .po-card { cursor:pointer; border-radius:8px; padding:10px 12px; margin-bottom:6px;
+    border:1.5px solid #e9e7f0; transition:border-color .15s, background .15s; }
+  .po-card:hover { border-color:#c4b5d4; background:#faf8fc; }
+  .po-card.selected { border-color:#8b5cf6; background:#f5f0ff; }
+  .badge-ordered  { background:#dbeafe; color:#1d4ed8; }
+  .badge-partial  { background:#fef3c7; color:#b45309; }
+  .badge-received { background:#dcfce7; color:#15803d; }
+  /* All SKUs table */
+  .all-table-wrap { overflow-x:auto; }
+  .all-table { border-collapse:collapse; width:100%; font-size:13px; min-width:1200px; }
+  .all-table th { background:#f8f7fa; color:#6b7280; font-size:11px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.04em; padding:8px 12px;
+    border-bottom:2px solid #e5e7eb; text-align:left; white-space:nowrap;
+    position:sticky; top:0; z-index:2; cursor:pointer; user-select:none; }
+  .all-table th:hover { background:#f0edf5; }
+  .all-table th.sorted { color:#6b21a8; }
+  .all-table td { padding:8px 12px; border-bottom:1px solid #f3f4f6; vertical-align:middle; }
+  .all-table tr:hover td { background:#faf8fc; }
+  .all-table tr.row-stockout td { background:#fff5f5; }
+  .all-table tr.row-low td { background:#fffdf0; }
+  .status-badge { display:inline-flex; align-items:center; gap:4px; font-size:11px;
+    font-weight:700; padding:3px 8px; border-radius:20px; }
+  .sb-ok       { background:#dcfce7; color:#15803d; }
+  .sb-low      { background:#fef3c7; color:#b45309; }
+  .sb-stockout { background:#fee2e2; color:#dc2626; }
+  .sb-inactive { background:#f3f4f6; color:#9ca3af; }
+  .ss-pending    { background:#f3f4f6; color:#6b7280; }
+  .ss-in_transit { background:#dbeafe; color:#1d4ed8; }
+  .ss-received   { background:#dcfce7; color:#15803d; }
+  /* Shipments */
+  .shipment-card { border:1px solid #e5e7eb; border-radius:8px; margin-bottom:8px; overflow:hidden; }
+  .shipment-card:last-child { margin-bottom:0; }
+  .shipment-header { background:#f8f7fa; padding:9px 12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .shipment-body { padding:10px 12px; border-top:1px solid #f3f4f6; }
+  .alloc-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .alloc-table th { color:#9ca3af; font-weight:600; font-size:11px; text-align:left; padding:3px 6px 5px; border-bottom:1px solid #f3f4f6; }
+  .alloc-table td { padding:4px 6px; border-bottom:1px solid #f9fafb; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- ── Top Bar ── -->
+<div class="bg-white border-b border-gray-200 px-4 flex items-center gap-1">
+  <span class="text-base font-bold text-gray-800 mr-3 py-3 flex-shrink-0">Lila</span>
+  <button class="nav-tab active" onclick="showTab('planner')"      id="nav-planner">Inventory Planner</button>
+  <button class="nav-tab"        onclick="showTab('all-skus')"     id="nav-all-skus">All SKUs</button>
+  <button class="nav-tab"        onclick="showTab('po-manager')"   id="nav-po-manager">PO Manager</button>
+  <button class="nav-tab"        onclick="showTab('biz-planning')" id="nav-biz-planning">Business Planning</button>
+  <div class="ml-auto flex items-center gap-3 py-2 flex-shrink-0">
+    <span class="text-xs px-2 py-1 rounded-full bg-purple-100 text-purple-700 font-semibold">View Only</span>
+    <span id="last-updated" class="text-xs text-gray-400"></span>
+    <button onclick="loadData()" class="bg-white border border-gray-200 hover:border-purple-400 text-gray-600 text-sm px-3 py-1.5 rounded-lg transition-colors">↺ Refresh</button>
+  </div>
+</div>
+
+<div class="max-w-screen-2xl mx-auto px-4 py-4">
+
+<!-- Loading state -->
+<div id="loading-section" class="card p-12 text-center mb-4">
+  <div class="text-4xl mb-3">⏳</div>
+  <p class="text-lg font-medium text-gray-700 mb-1" id="loading-msg">Loading inventory data…</p>
+  <p class="text-sm text-gray-400">Fetching latest data from GitHub</p>
+</div>
+
+<!-- ══════════════ TAB 1: INVENTORY PLANNER ══════════════ -->
+<div id="tab-planner" class="hidden space-y-4">
+  <div class="card p-4">
+    <div class="flex flex-wrap items-start gap-4">
+      <div class="flex-1 min-w-64">
+        <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Select SKU</label>
+        <select id="sku-select" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white" onchange="selectSKU(this.value)">
+          <option value="">— choose a product —</option>
+        </select>
+      </div>
+      <div id="summary-cards" class="hidden flex flex-wrap gap-3">
+        <div class="card p-3 min-w-28 border border-gray-100">
+          <div class="text-xs text-gray-400 font-medium uppercase tracking-wide">Stock</div>
+          <div id="stat-inventory" class="text-2xl font-bold text-gray-800 mt-0.5">—</div>
+          <div class="text-xs text-gray-400">units on hand</div>
+        </div>
+        <div class="card p-3 min-w-28 border border-gray-100">
+          <div class="text-xs text-gray-400 font-medium uppercase tracking-wide">Avg Weekly</div>
+          <div id="stat-avg" class="text-2xl font-bold text-gray-800 mt-0.5">—</div>
+          <div class="text-xs text-gray-400">units / week</div>
+        </div>
+        <div class="card p-3 min-w-28 border border-gray-100">
+          <div class="text-xs text-gray-400 font-medium uppercase tracking-wide">Weeks of Stock</div>
+          <div id="stat-weeks" class="text-2xl font-bold mt-0.5">—</div>
+          <div class="text-xs text-gray-400">at current rate</div>
+        </div>
+        <div class="card p-3 min-w-28 border border-gray-100">
+          <div class="text-xs text-gray-400 font-medium uppercase tracking-wide">Stockout</div>
+          <div id="stat-stockout" class="text-base font-bold text-gray-800 mt-0.5">—</div>
+          <div class="text-xs text-gray-400">projected</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="alert-banner" class="hidden card p-3 px-4 text-sm font-medium"></div>
+
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Weekly Sales — Last 90 Days + 90-Day Projection</h2>
+      <div class="flex items-center gap-2 text-xs text-gray-400">
+        <span class="flex items-center gap-1"><span class="w-3 h-3 inline-block rounded-sm bg-purple-300"></span>Actual</span>
+        <span class="flex items-center gap-1"><span class="w-4 inline-block" style="border-top:2px dashed #6b21a8"></span>Projected</span>
+      </div>
+    </div>
+    <div id="sku-growth-note" class="hidden text-xs text-purple-700 bg-purple-50 rounded-lg px-3 py-1.5 mb-2">
+      <span>Growth rate for this SKU: <span id="sku-growth-display" class="font-bold"></span>%/mo</span>
+      <span class="text-gray-400 ml-2">(global: <span id="global-rate-display">0</span>%/mo)</span>
+    </div>
+    <div class="chart-container"><canvas id="history-chart"></canvas></div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="card p-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Projection Settings</h2>
+      <div class="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 space-y-1">
+        <div>Mode: <span id="view-proj-mode" class="font-semibold text-gray-700">Growth Rate</span></div>
+        <div>Growth rate: <span id="view-growth-rate" class="font-semibold text-gray-700">0%/mo</span></div>
+        <div>Base period: <span id="view-base-period" class="font-semibold text-gray-700">Last 13 weeks</span></div>
+        <div>Starting weekly demand: <span id="growth-start-units" class="font-semibold text-purple-700">— units</span></div>
+      </div>
+      <div class="mt-4 pt-4 border-t border-gray-100">
+        <label class="block text-xs font-medium text-gray-500 mb-1">Project forward (weeks)</label>
+        <input type="range" id="proj-weeks" min="4" max="52" value="16" class="w-full" oninput="document.getElementById('proj-weeks-label').textContent=this.value; updateProjection()">
+        <div class="text-xs text-gray-400 mt-1">Showing <span id="proj-weeks-label">16</span> weeks</div>
+      </div>
+    </div>
+    <div class="card p-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">POs for This SKU</h2>
+      <div id="planner-po-list" class="space-y-1.5 max-h-64 overflow-y-auto">
+        <p class="text-sm text-gray-400 text-center py-8">Select a SKU above</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Inventory Projection</h2>
+      <div class="flex gap-4 text-xs text-gray-400">
+        <span class="flex items-center gap-1"><span class="w-4 h-px inline-block bg-blue-500"></span>Historical</span>
+        <span class="flex items-center gap-1"><span class="w-4 inline-block" style="border-top:2px dashed #8b5cf6"></span>Projected</span>
+        <span class="flex items-center gap-1"><span class="w-3 h-3 inline-block bg-green-400 rounded-sm"></span>PO</span>
+      </div>
+    </div>
+    <div class="proj-chart-container"><canvas id="projection-chart"></canvas></div>
+  </div>
+</div><!-- /tab-planner -->
+
+<!-- ══════════════ TAB 2: ALL SKUs ══════════════ -->
+<div id="tab-all-skus" class="hidden space-y-4">
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="card p-4">
+      <div class="text-xs text-gray-400 font-semibold uppercase tracking-wide">Total SKUs</div>
+      <div id="all-total-skus" class="text-2xl font-bold text-gray-800 mt-1">—</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs text-gray-400 font-semibold uppercase tracking-wide">Proj. Sales 180d</div>
+      <div id="all-proj-sales" class="text-2xl font-bold text-purple-700 mt-1">—</div>
+      <div class="text-xs text-gray-400">units (all SKUs)</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs text-amber-500 font-semibold uppercase tracking-wide">Low Stock at 180d</div>
+      <div id="all-low-count" class="text-2xl font-bold text-amber-500 mt-1">—</div>
+      <div class="text-xs text-gray-400">SKUs &lt; 4 wks demand</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs text-red-500 font-semibold uppercase tracking-wide">Stockouts at 180d</div>
+      <div id="all-stockout-count" class="text-2xl font-bold text-red-600 mt-1">—</div>
+      <div class="text-xs text-gray-400">SKUs with 0 inventory</div>
+    </div>
+  </div>
+  <div class="card p-4">
+    <div class="flex gap-3 mb-3 flex-wrap items-center">
+      <input type="text" id="all-search" placeholder="Search product or variant…" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm flex-1 min-w-40" oninput="renderAllSKUsTable()">
+      <select id="all-status-filter" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm bg-white" onchange="renderAllSKUsTable()">
+        <option value="">All statuses</option>
+        <option value="stockout">Stockout</option>
+        <option value="low">Low stock</option>
+        <option value="ok">On track</option>
+        <option value="inactive">Inactive</option>
+      </select>
+      <span id="all-row-count" class="text-xs text-gray-400 ml-auto"></span>
+    </div>
+    <div class="all-table-wrap rounded-lg border border-gray-200">
+      <table class="all-table" id="all-table">
+        <thead>
+          <tr>
+            <th onclick="sortAllTable('title')"      id="th-title"      style="width:24%">Product Title <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('variant')"    id="th-variant"    style="width:14%">Variant <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('inv')"        id="th-inv"        style="width:7%; text-align:right">In Stock <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('incoming')"   id="th-incoming"   style="width:7%; text-align:right">Incoming <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('projSales')"  id="th-projSales"  style="width:9%; text-align:right">Proj Sales 180d <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('projInv30')"  id="th-projInv30"  style="width:7%; text-align:right">Proj Inv 30d <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('projInv60')"  id="th-projInv60"  style="width:7%; text-align:right">Proj Inv 60d <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('projInv90')"  id="th-projInv90"  style="width:7%; text-align:right">Proj Inv 90d <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('projInv')"    id="th-projInv"    style="width:8%; text-align:right">Proj Inv 180d <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('projInv270')" id="th-projInv270" style="width:8%; text-align:right">Proj Inv 270d <span class="sort-arrow"></span></th>
+            <th onclick="sortAllTable('status')"     id="th-status"     style="width:7%">Status <span class="sort-arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="all-tbody">
+          <tr><td colspan="11" class="text-center text-gray-400 py-10 text-sm">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div><!-- /tab-all-skus -->
+
+<!-- ══════════════ TAB 3: PO MANAGER (read-only) ══════════════ -->
+<div id="tab-po-manager" class="hidden">
+  <div class="flex gap-4" style="min-height:calc(100vh - 120px)">
+    <div class="w-64 flex-shrink-0 flex flex-col gap-3">
+      <div class="card p-3 flex-1 overflow-y-auto">
+        <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Purchase Orders</div>
+        <div id="po-list-panel"><p class="text-sm text-gray-400 text-center py-8">Loading…</p></div>
+      </div>
+    </div>
+    <div class="flex-1 flex flex-col gap-3">
+      <div class="card p-10 text-center text-gray-400 text-sm flex items-center justify-center" id="po-view-empty" style="min-height:300px">
+        <div><div class="text-4xl mb-3">📋</div><p class="font-medium text-gray-500 mb-1">No PO selected</p><p>Select a PO from the list</p></div>
+      </div>
+      <div id="po-view" class="hidden flex flex-col gap-3">
+        <div class="card p-4">
+          <div class="flex items-start gap-4 flex-wrap">
+            <div><div class="text-xs font-medium text-gray-400 mb-1">PO Number</div><div id="vw-poNumber" class="text-sm font-bold text-gray-800"></div></div>
+            <div><div class="text-xs font-medium text-gray-400 mb-1">Expected Delivery</div><div id="vw-expectedDelivery" class="text-sm text-gray-700"></div></div>
+            <div><div class="text-xs font-medium text-gray-400 mb-1">Status</div><div id="vw-status" class="text-sm font-bold"></div></div>
+            <div class="flex-1 min-w-40"><div class="text-xs font-medium text-gray-400 mb-1">Notes</div><div id="vw-notes" class="text-sm text-gray-600"></div></div>
+            <div class="ml-auto text-right"><div class="text-xs text-gray-400 mb-1">Summary</div><div id="vw-summary" class="text-sm font-semibold text-gray-700"></div></div>
+          </div>
+        </div>
+        <!-- Shipments -->
+        <div class="card p-4" id="vw-shipments-card">
+          <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Shipment Batches</h2>
+          <div id="vw-shipments-list"></div>
+        </div>
+        <!-- Line items -->
+        <div class="card p-4">
+          <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Line Items</h2>
+          <div style="overflow-x:auto;border:1px solid #e5e7eb;border-radius:8px">
+            <table style="border-collapse:collapse;width:100%;font-size:13px">
+              <thead><tr>
+                <th style="background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;padding:8px 12px;border-bottom:2px solid #e5e7eb;text-align:left">Product</th>
+                <th style="background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;padding:8px 12px;border-bottom:2px solid #e5e7eb;text-align:left">Variant</th>
+                <th style="background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;padding:8px 12px;border-bottom:2px solid #e5e7eb;text-align:right">Ordered</th>
+                <th style="background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;padding:8px 12px;border-bottom:2px solid #e5e7eb;text-align:right">Received</th>
+                <th style="background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;padding:8px 12px;border-bottom:2px solid #e5e7eb">Rec. Date</th>
+                <th style="background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;padding:8px 12px;border-bottom:2px solid #e5e7eb;text-align:right">In Stock</th>
+              </tr></thead>
+              <tbody id="vw-sku-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div><!-- /tab-po-manager -->
+
+<!-- ══════════════ TAB 4: BUSINESS PLANNING ══════════════ -->
+<div id="tab-biz-planning" class="hidden space-y-4">
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="card p-4">
+      <div class="text-xs text-gray-400 font-semibold uppercase tracking-wide">Total Units On Hand</div>
+      <div id="biz-total-inv" class="text-2xl font-bold text-gray-800 mt-1">—</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs text-gray-400 font-semibold uppercase tracking-wide">Incoming (All POs)</div>
+      <div id="biz-total-incoming" class="text-2xl font-bold text-green-600 mt-1">—</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs text-gray-400 font-semibold uppercase tracking-wide">Proj. Units Sold (9mo)</div>
+      <div id="biz-total-sold" class="text-2xl font-bold text-purple-700 mt-1">—</div>
+    </div>
+    <div class="card p-4">
+      <div class="text-xs text-gray-400 font-semibold uppercase tracking-wide">Proj. Inv End of 9mo</div>
+      <div id="biz-end-inv" class="text-2xl font-bold text-gray-800 mt-1">—</div>
+    </div>
+  </div>
+  <div class="card p-4">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Monthly Units — Sold vs. Remaining Inventory</h2>
+    <div style="position:relative;height:300px"><canvas id="biz-chart"></canvas></div>
+  </div>
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Monthly Breakdown</h2>
+      <span class="text-xs text-gray-400">All SKUs combined</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="border-collapse:collapse;width:100%;font-size:13px;min-width:700px">
+        <thead><tr id="biz-month-headers"></tr></thead>
+        <tbody id="biz-table-body"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Per-SKU Monthly Units Sold</h2>
+      <input type="text" id="biz-sku-search" placeholder="Search…" class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm w-48" oninput="renderBizPlanning()">
+    </div>
+    <div style="overflow-x:auto">
+      <table style="border-collapse:collapse;width:100%;font-size:12px;min-width:700px">
+        <thead><tr id="biz-sku-headers"></tr></thead>
+        <tbody id="biz-sku-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div><!-- /tab-biz-planning -->
+
+</div><!-- /container -->
+<script>
+// ─── GITHUB CONFIG ────────────────────────────────────────────────────────────
+const GITHUB_RAW = 'https://raw.githubusercontent.com/LeviRosendall/levi-inventory-planning/main/';
+const CSV_FILE   = 'weekly-sales.csv';
+const PO_FILE    = 'purchase-orders.json';
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let allData = [];
+let skuMap  = {};
+let skuList = [];
+let totalUnitsByWeek = {};
+let currentSKU = null;
+let projMode   = 'growth';
+let histChart  = null;
+let projChart  = null;
+let bizChart   = null;
+
+let globalGrowthRate   = 0;
+let skuGrowthOverrides = {};
+
+let purchaseOrders = [];
+let nextId = 1;
+let currentPOId = null;
+
+let allSortCol = 'title';
+let allSortDir = 1;
+
+// ─── FETCH DATA FROM GITHUB ───────────────────────────────────────────────────
+async function loadData() {
+  document.getElementById('loading-section').classList.remove('hidden');
+  ['tab-planner','tab-all-skus','tab-po-manager','tab-biz-planning'].forEach(id=>{
+    document.getElementById(id).classList.add('hidden');
+  });
+  ['nav-planner','nav-all-skus','nav-po-manager','nav-biz-planning'].forEach(id=>{
+    document.getElementById(id).classList.remove('active');
+  });
+  document.getElementById('loading-msg').textContent = 'Loading inventory data…';
+
+  let csvOk = false, poOk = false;
+
+  // Fetch CSV
+  try {
+    const res = await fetch(GITHUB_RAW + CSV_FILE + '?t=' + Date.now());
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    await new Promise(resolve => {
+      Papa.parse(text, { header:true, skipEmptyLines:true, complete: r => {
+        processData(r.data);
+        csvOk = true;
+        resolve();
+      }});
+    });
+  } catch(e) {
+    document.getElementById('loading-msg').textContent = 'Could not load CSV: ' + e.message;
+    return;
+  }
+
+  // Fetch POs
+  try {
+    const res = await fetch(GITHUB_RAW + PO_FILE + '?t=' + Date.now());
+    if (res.ok) {
+      const d = await res.json();
+      const pos = d.pos || d;
+      if (Array.isArray(pos)) {
+        purchaseOrders = pos;
+        nextId = Math.max(1, ...pos.map(p => p.id + 1));
+        poOk = true;
+      }
+    }
+  } catch(e) { /* PO file may not exist yet, that's fine */ }
+
+  const now = new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  document.getElementById('last-updated').textContent = 'Updated ' + now + (poOk ? '' : ' · No PO data');
+
+  renderPOList();
+  document.getElementById('loading-section').classList.add('hidden');
+  showTab('planner');
+}
+
+// ─── TABS ─────────────────────────────────────────────────────────────────────
+function showTab(t) {
+  ['planner','all-skus','po-manager','biz-planning'].forEach(id => {
+    document.getElementById('tab-'+id).classList.toggle('hidden', id!==t);
+    document.getElementById('nav-'+id).classList.toggle('active', id===t);
+  });
+  if (t==='po-manager')   renderPOList();
+  if (t==='all-skus')     renderAllSKUsTable();
+  if (t==='biz-planning') renderBizPlanning();
+}
+
+// ─── DATA PROCESSING ──────────────────────────────────────────────────────────
+function processData(rows) {
+  allData = rows;
+  skuMap = {}; skuList = []; totalUnitsByWeek = {};
+  const seen = new Set(), pairs = [];
+  rows.forEach(r => {
+    const title   = (r['Product title']||'').trim();
+    const variant = (r['Product variant title']||'').trim();
+    const week    = (r['Week']||'').trim();
+    const endInv  = parseInt(r['Ending inventory units'])||0;
+    const sold    = parseInt(r['Inventory units sold'])||0;
+    if (!title || !week) return;
+    const key = title+' / '+variant;
+    if (!skuMap[key]) skuMap[key] = [];
+    skuMap[key].push({week, endingInventory:endInv, unitsSold:sold});
+    if (!totalUnitsByWeek[week]) totalUnitsByWeek[week]=0;
+    totalUnitsByWeek[week]+=sold;
+    const uniq = title+'|||'+variant;
+    if (!seen.has(uniq)) { seen.add(uniq); pairs.push({key, title, variant}); }
+  });
+  Object.keys(skuMap).forEach(k => skuMap[k].sort((a,b)=>a.week.localeCompare(b.week)));
+  skuList = pairs.sort((a,b)=>a.title.localeCompare(b.title)||a.variant.localeCompare(b.variant));
+  populateSKUSelect();
+}
+
+function populateSKUSelect() {
+  const sel = document.getElementById('sku-select');
+  sel.innerHTML = '<option value="">— choose a product —</option>' +
+    skuList.map(s=>`<option value="${esc(s.key)}">${esc(s.key)}</option>`).join('');
+}
+
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function daysAgo(n){ const d=new Date(); d.setDate(d.getDate()-n); return d.toISOString().slice(0,10); }
+function addDays(ds,n){ const d=new Date(ds+'T00:00:00'); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+function wkLabel(ds){ return new Date(ds+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}); }
+function fmtDate(ds){ if(!ds)return''; return new Date(ds+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+
+function getEffectiveGrowthRate(skuKey) {
+  const ov = skuGrowthOverrides[skuKey];
+  return (ov !== undefined && ov !== null) ? ov : globalGrowthRate;
+}
+
+function getAvgWeeklySales(skuKey, weeks) {
+  const rows = skuMap[skuKey]||[];
+  const cutoff = daysAgo(weeks*7);
+  const hist = rows.filter(r=>r.week>=cutoff);
+  return hist.length ? hist.reduce((s,r)=>s+r.unitsSold,0)/hist.length : 0;
+}
+
+function getWeeklyDemandForSKU(skuKey, wi) {
+  const rows = skuMap[skuKey]||[];
+  if (projMode==='growth') {
+    const g  = getEffectiveGrowthRate(skuKey);
+    const bp = parseInt(document.getElementById('proj-weeks').value) ? 13 : 13;
+    const cutoff = daysAgo(13*7);
+    const hist = rows.filter(r=>r.week>=cutoff);
+    const base = hist.length ? hist.reduce((s,r)=>s+r.unitsSold,0)/hist.length : 0;
+    const wg = Math.pow(1+g/100,1/4.33)-1;
+    return base*Math.pow(1+wg,wi);
+  } else {
+    return getAvgWeeklySales(skuKey, 13);
+  }
+}
+
+function getWeeklyDemand(wi) {
+  if (!currentSKU) return 0;
+  return getWeeklyDemandForSKU(currentSKU, wi);
+}
+
+function getPOsForSKU(skuKey) {
+  const results = [];
+  for (const po of purchaseOrders) {
+    if (po.status === 'received') continue;
+    const li = po.lineItems?.[skuKey];
+    if (!li || (li.orderedQty||0) <= 0) continue;
+    const shipments = (po.shipments||[]).filter(s => s.status !== 'received' && (s.skuQtys?.[skuKey]||0) > 0 && s.expectedDelivery);
+    if (shipments.length > 0) {
+      for (const sh of shipments) results.push({date: sh.expectedDelivery, qty: sh.skuQtys[skuKey]});
+    } else if (po.expectedDelivery) {
+      const qty = po.status==='partial' ? Math.max(0,(li.orderedQty||0)-(li.receivedQty||0)) : (li.orderedQty||0);
+      if (qty > 0) results.push({date: po.expectedDelivery, qty});
+    }
+  }
+  return results.filter(p => p.qty > 0);
+}
+
+function projectedSalesTotal(skuKey, weeks) {
+  let total = 0;
+  for (let i=0; i<weeks; i++) total += getWeeklyDemandForSKU(skuKey, i)||0;
+  return total;
+}
+
+function projectedInventoryAt(skuKey, weeks) {
+  const rows = skuMap[skuKey]||[];
+  const lastRow = rows.length ? rows[rows.length-1] : null;
+  let inv = lastRow ? lastRow.endingInventory : 0;
+  const lastWeek = lastRow ? lastRow.week : daysAgo(0);
+  const pos = getPOsForSKU(skuKey);
+  for (let i=0; i<weeks; i++) {
+    const ws=addDays(lastWeek,i*7), we=addDays(lastWeek,(i+1)*7);
+    inv += pos.filter(p=>p.date>=ws&&p.date<we).reduce((s,p)=>s+p.qty,0);
+    inv -= getWeeklyDemandForSKU(skuKey, i)||0;
+  }
+  return inv;
+}
+
+function projectedSalesBetween(skuKey, startWeek, endWeek) {
+  let total = 0;
+  for (let i=startWeek; i<endWeek; i++) total += getWeeklyDemandForSKU(skuKey, i)||0;
+  return total;
+}
+
+// ─── INVENTORY PLANNER ────────────────────────────────────────────────────────
+function getHistRows(skuKey) {
+  return (skuMap[skuKey]||[]).filter(r=>r.week>=daysAgo(90));
+}
+
+function selectSKU(key) {
+  if (!key) return;
+  currentSKU = key;
+  const rows    = skuMap[key]||[];
+  const hist    = getHistRows(key);
+  const lastInv = rows.length ? rows[rows.length-1].endingInventory : 0;
+  const avg     = hist.length ? hist.reduce((s,r)=>s+r.unitsSold,0)/hist.length : 0;
+  const wks     = avg>0 ? lastInv/avg : Infinity;
+
+  document.getElementById('stat-inventory').textContent = lastInv;
+  document.getElementById('stat-avg').textContent = avg.toFixed(1);
+  document.getElementById('stat-weeks').textContent = isFinite(wks)?wks.toFixed(1):'∞';
+  colorWeeks(wks);
+  document.getElementById('summary-cards').classList.remove('hidden');
+
+  // Show growth rate info
+  const gr = getEffectiveGrowthRate(key);
+  const hasOverride = skuGrowthOverrides[key] !== undefined;
+  const note = document.getElementById('sku-growth-note');
+  note.classList.remove('hidden');
+  document.getElementById('sku-growth-display').textContent = gr;
+  document.getElementById('global-rate-display').textContent = globalGrowthRate;
+  note.style.display = hasOverride ? '' : 'none';
+
+  // Update settings display
+  document.getElementById('view-growth-rate').textContent = gr + '%/mo';
+
+  const u = getWeeklyDemand(0);
+  document.getElementById('growth-start-units').textContent = u != null ? u.toFixed(1)+' units' : '— units';
+
+  renderHistChart(hist);
+  renderPlannerPOList();
+  updateProjection();
+}
+
+function colorWeeks(w) {
+  const el = document.getElementById('stat-weeks');
+  el.className = 'text-2xl font-bold mt-0.5 '+(w<4?'text-red-600':w<8?'text-amber-500':'text-green-600');
+}
+
+function renderHistChart(hist) {
+  const hLabels = hist.map(r=>wkLabel(r.week));
+  const hData   = hist.map(r=>r.unitsSold);
+  const lastRow = hist.length ? hist[hist.length-1] : null;
+  const lastWeek = lastRow ? lastRow.week : daysAgo(0);
+  const avg = hData.length ? hData.reduce((a,b)=>a+b,0)/hData.length : 0;
+  const pLabels=[], pData=[];
+  for (let i=0; i<13; i++) {
+    pLabels.push(wkLabel(addDays(lastWeek,(i+1)*7)));
+    const d = currentSKU ? getWeeklyDemand(i) : null;
+    pData.push(d != null ? +d.toFixed(2) : avg);
+  }
+  const allLabels = hLabels.concat(pLabels);
+  const barData   = hData.concat(new Array(13).fill(null));
+  const lineData  = new Array(Math.max(hLabels.length-1,0)).fill(null)
+    .concat([hData.length ? hData[hData.length-1] : null])
+    .concat(pData);
+  const avgLine   = allLabels.map(()=>avg);
+  if (histChart) histChart.destroy();
+  histChart = new Chart(document.getElementById('history-chart'), {
+    data: { labels: allLabels, datasets: [
+      { type:'bar',  label:'Actual Sales',     data:barData,  backgroundColor:'#c4b5d4', borderRadius:5, borderSkipped:false },
+      { type:'line', label:'Projected Demand', data:lineData, borderColor:'#6b21a8', borderDash:[5,3], borderWidth:2.5, pointRadius:3, pointBackgroundColor:'#6b21a8', fill:false, tension:0.3, spanGaps:false },
+      { type:'line', label:'Historical Avg',   data:avgLine,  borderColor:'#d1d5db', borderDash:[2,4], borderWidth:1.5, pointRadius:0, fill:false }
+    ]},
+    options: { responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:true, position:'top', labels:{font:{size:11}, usePointStyle:true, boxWidth:16} },
+        tooltip:{mode:'index',intersect:false} },
+      scales:{
+        x:{ grid:{display:false}, ticks:{font:{size:10}, maxRotation:45} },
+        y:{ grid:{color:'#f0f0f0'}, beginAtZero:true, ticks:{font:{size:11}} }
+      }
+    }
+  });
+}
+
+function updateProjection() {
+  if (!currentSKU) return;
+  const u = getWeeklyDemand(0);
+  document.getElementById('growth-start-units').textContent = u != null ? u.toFixed(1)+' units' : '— units';
+  renderProjChart();
+}
+
+function renderProjChart() {
+  if (!currentSKU) return;
+  const rows=skuMap[currentSKU]||[];
+  const hist=getHistRows(currentSKU);
+  const pw=parseInt(document.getElementById('proj-weeks').value)||16;
+  const hLbl=hist.map(r=>wkLabel(r.week));
+  const hInv=hist.map(r=>r.endingInventory);
+  const last=rows.length?rows[rows.length-1]:null;
+  const lInv=last?last.endingInventory:0;
+  const lWk=last?last.week:daysAgo(0);
+  const pos=getPOsForSKU(currentSKU);
+  const pLbl=[],pInv=[],poPts=[],soFlags=[];
+  let inv=lInv;
+  for(let i=0;i<pw;i++){
+    const ws=addDays(lWk,i*7),we=addDays(lWk,(i+1)*7);
+    pLbl.push(wkLabel(we));
+    const poQ=pos.filter(p=>p.date>=ws&&p.date<we).reduce((s,p)=>s+p.qty,0);
+    inv+=poQ; poPts.push(poQ>0?poQ:null);
+    const dem=getWeeklyDemand(i)||0; inv-=dem;
+    pInv.push(inv); soFlags.push(inv<0);
+  }
+  const fo=soFlags.findIndex(Boolean);
+  const banner=document.getElementById('alert-banner');
+  if(fo>=0){
+    const d=addDays(lWk,(fo+1)*7);
+    banner.className='card p-3 px-4 text-sm font-medium stockout-alert';
+    banner.textContent=`⚠ Projected stockout around ${wkLabel(d)} (week ${fo+1}).`;
+    banner.classList.remove('hidden');
+    document.getElementById('stat-stockout').textContent=wkLabel(d);
+    document.getElementById('stat-stockout').className='text-base font-bold text-red-600 mt-0.5';
+  } else {
+    banner.classList.add('hidden');
+    document.getElementById('stat-stockout').textContent='No risk';
+    document.getElementById('stat-stockout').className='text-base font-bold text-green-600 mt-0.5';
+  }
+  const aLbl=hLbl.concat(pLbl);
+  const hFull=hInv.concat(new Array(pw).fill(null));
+  const pFull=new Array(hLbl.length-1).fill(null).concat([hInv.length?hInv[hInv.length-1]:null]).concat(pInv);
+  const poFull=new Array(hLbl.length).fill(null).concat(poPts);
+  if(projChart) projChart.destroy();
+  projChart=new Chart(document.getElementById('projection-chart'),{
+    data:{labels:aLbl,datasets:[
+      {type:'line',label:'Historical Inventory',data:hFull,borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.07)',borderWidth:2.5,pointRadius:3,fill:true,tension:0.3,spanGaps:false},
+      {type:'line',label:'Projected Inventory', data:pFull,borderColor:'#8b5cf6',borderDash:[6,4],borderWidth:2.5,backgroundColor:'rgba(139,92,246,0.05)',pointRadius:2,fill:true,tension:0.3,spanGaps:false},
+      {type:'bar', label:'PO Arrival',          data:poFull,backgroundColor:'rgba(34,197,94,0.55)',borderColor:'rgba(34,197,94,0.8)',borderWidth:1,borderRadius:4,yAxisID:'y2'}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:true,position:'top',labels:{font:{size:11},usePointStyle:true,boxWidth:18}},
+        tooltip:{callbacks:{label:c=>c.raw==null?null:c.dataset.label==='PO Arrival'?`PO: +${c.raw} units`:`${c.dataset.label}: ${c.raw} units`}}},
+      scales:{x:{grid:{display:false},ticks:{font:{size:10},maxRotation:45}},
+        y:{grid:{color:'#f0f0f0'},ticks:{font:{size:11}},title:{display:true,text:'Units on Hand',font:{size:11},color:'#9ca3af'}},
+        y2:{position:'right',beginAtZero:true,grid:{display:false},ticks:{font:{size:10},color:'#22c55e'},title:{display:true,text:'PO Units',font:{size:10},color:'#22c55e'}}}}
+  });
+}
+
+function renderPlannerPOList() {
+  const c=document.getElementById('planner-po-list');
+  if (!currentSKU){c.innerHTML='<p class="text-sm text-gray-400 text-center py-8">Select a SKU above</p>';return;}
+  const pos=purchaseOrders.filter(po=>po.lineItems?.[currentSKU]?.orderedQty>0)
+    .sort((a,b)=>(a.expectedDelivery||'').localeCompare(b.expectedDelivery||''));
+  if(!pos.length){
+    c.innerHTML='<p class="text-sm text-gray-400 text-center py-6">No POs include this SKU.</p>';return;
+  }
+  const bc={ordered:'badge-ordered',partial:'badge-partial',received:'badge-received'};
+  const ssLabel={pending:'Pending', in_transit:'In Transit', received:'Received'};
+  const ssCls  ={pending:'ss-pending', in_transit:'ss-in_transit', received:'ss-received'};
+  c.innerHTML=pos.map(po=>{
+    const li=po.lineItems[currentSKU];
+    const ships=(po.shipments||[]).filter(s=>(s.skuQtys?.[currentSKU]||0)>0);
+    const shipLines=ships.length
+      ? ships.map(sh=>`<div class="flex items-center gap-1.5 mt-0.5 ml-1 text-xs text-gray-500">
+          <span class="font-semibold px-1.5 py-0 rounded text-xs ${ssCls[sh.status]||'ss-pending'}">${ssLabel[sh.status]||'?'}</span>
+          <span>${sh.skuQtys[currentSKU]} units</span>
+          ${sh.expectedDelivery?`<span class="text-gray-400">→ ${fmtDate(sh.expectedDelivery)}</span>`:''}
+          ${sh.tracking?`<span class="text-gray-400 truncate max-w-24">${esc(sh.tracking)}</span>`:''}
+        </div>`).join('')
+      : '';
+    return `<div class="px-2 py-2 rounded-lg border border-gray-100 hover:bg-gray-50">
+      <div class="flex items-center gap-2">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-xs font-bold px-2 py-0.5 rounded capitalize ${bc[po.status]||'bg-gray-100 text-gray-600'}">${po.status}</span>
+            <span class="text-sm font-semibold text-gray-700">${esc(po.poNumber||'Untitled')}</span>
+            ${!ships.length&&po.expectedDelivery?`<span class="text-xs text-gray-400">${fmtDate(po.expectedDelivery)}</span>`:''}
+          </div>
+          <div class="text-xs text-gray-500 mt-0.5">+${li.orderedQty||0} ordered${po.status!=='ordered'?` · ${li.receivedQty||0} received`:''}${po.notes?` · ${po.notes}`:''}</div>
+          ${shipLines}
+        </div>
+        <button onclick="openPOView(${po.id}); showTab('po-manager')" class="text-xs text-purple-600 hover:underline flex-shrink-0">View</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ─── ALL SKUs ─────────────────────────────────────────────────────────────────
+function openInPlanner(enc) {
+  const key = decodeURIComponent(enc);
+  showTab('planner');
+  const sel = document.getElementById('sku-select');
+  sel.value = key;
+  selectSKU(key);
+}
+
+let allSortCol2 = 'title', allSortDir2 = 1;
+function sortAllTable(col) {
+  if (allSortCol===col) allSortDir*=-1;
+  else { allSortCol=col; allSortDir=1; }
+  renderAllSKUsTable();
+}
+
+function renderAllSKUsTable() {
+  if (!skuList.length) return;
+  const tbody = document.getElementById('all-tbody');
+  const search = (document.getElementById('all-search')?.value||'').toLowerCase();
+  const statusFilter = document.getElementById('all-status-filter')?.value||'';
+
+  const dataRows = skuList.map(s => {
+    const rows = skuMap[s.key]||[];
+    const lastRow = rows.length ? rows[rows.length-1] : null;
+    const inv = lastRow?.endingInventory||0;
+    const avg4 = getAvgWeeklySales(s.key, 4);
+    const incoming = getPOsForSKU(s.key).reduce((sum,p)=>sum+p.qty, 0);
+    const projSales  = projectedSalesTotal(s.key, 26);
+    const projInv30  = projectedInventoryAt(s.key, 4);
+    const projInv60  = projectedInventoryAt(s.key, 9);
+    const projInv90  = projectedInventoryAt(s.key, 13);
+    const projInv    = projectedInventoryAt(s.key, 26);
+    const projInv270 = projectedInventoryAt(s.key, 39);
+    const wksLeft    = avg4>0 ? projInv/avg4 : Infinity;
+    let status;
+    if (avg4===0 && inv===0) status='inactive';
+    else if (projInv < 0)    status='stockout';
+    else if (wksLeft < 4)    status='low';
+    else                      status='ok';
+    return { ...s, inv, incoming, avg4, projSales, projInv30, projInv60, projInv90, projInv, projInv270, wksLeft, status };
+  });
+
+  const filtered = dataRows.filter(r => {
+    if (statusFilter && r.status!==statusFilter) return false;
+    if (search) { const hay=(r.title+' '+r.variant).toLowerCase(); if (!hay.includes(search)) return false; }
+    return true;
+  });
+
+  const sortFns = {
+    title:     (a,b)=>a.title.localeCompare(b.title)||a.variant.localeCompare(b.variant),
+    variant:   (a,b)=>a.variant.localeCompare(b.variant)||a.title.localeCompare(b.title),
+    inv:       (a,b)=>a.inv-b.inv,
+    incoming:  (a,b)=>a.incoming-b.incoming,
+    projSales: (a,b)=>a.projSales-b.projSales,
+    projInv30: (a,b)=>a.projInv30-b.projInv30,
+    projInv60: (a,b)=>a.projInv60-b.projInv60,
+    projInv90: (a,b)=>a.projInv90-b.projInv90,
+    projInv:   (a,b)=>a.projInv-b.projInv,
+    projInv270:(a,b)=>a.projInv270-b.projInv270,
+    status:    (a,b)=>['stockout','low','ok','inactive'].indexOf(a.status)-['stockout','low','ok','inactive'].indexOf(b.status),
+  };
+  filtered.sort((a,b)=>(sortFns[allSortCol]||sortFns.title)(a,b)*allSortDir);
+
+  const totalProjSales = dataRows.reduce((s,r)=>s+r.projSales,0);
+  const stockoutCt = dataRows.filter(r=>r.status==='stockout').length;
+  const lowCt      = dataRows.filter(r=>r.status==='low').length;
+  document.getElementById('all-total-skus').textContent   = skuList.length;
+  document.getElementById('all-proj-sales').textContent   = Math.round(totalProjSales).toLocaleString();
+  document.getElementById('all-low-count').textContent    = lowCt;
+  document.getElementById('all-stockout-count').textContent = stockoutCt;
+  document.getElementById('all-row-count').textContent = `${filtered.length} of ${skuList.length} SKUs`;
+
+  ['title','variant','inv','incoming','projSales','projInv30','projInv60','projInv90','projInv','projInv270','status'].forEach(col => {
+    const th = document.getElementById('th-'+col);
+    if (!th) return;
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.textContent = allSortCol===col ? (allSortDir===1?' ↑':' ↓') : '';
+    th.classList.toggle('sorted', allSortCol===col);
+  });
+
+  const sbClass = {ok:'sb-ok', low:'sb-low', stockout:'sb-stockout', inactive:'sb-inactive'};
+  const sbLabel = {ok:'On Track', low:'Low Stock', stockout:'Stockout', inactive:'Inactive'};
+  const rowClass = {stockout:'row-stockout', low:'row-low', ok:'', inactive:''};
+
+  if (!filtered.length) {
+    tbody.innerHTML=`<tr><td colspan="11" class="text-center text-gray-400 py-10 text-sm">${skuList.length?'No SKUs match filters.':'Loading…'}</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(r => {
+    const enc = encodeURIComponent(r.key);
+    return `<tr class="${rowClass[r.status]||''}" data-sku="${enc}">
+      <td class="font-medium text-purple-700 hover:text-purple-900 cursor-pointer underline decoration-dotted" onclick="openInPlanner('${enc}')">${esc(r.title)}</td>
+      <td class="text-gray-500">${esc(r.variant)}</td>
+      <td class="text-right font-medium ${r.inv<=0?'text-red-500':''}">${r.inv}</td>
+      <td class="text-right font-medium ${r.incoming>0?'text-green-600':'text-gray-300'}">${r.incoming>0?'+'+r.incoming.toLocaleString():'—'}</td>
+      <td class="text-right font-semibold text-purple-700">${Math.round(r.projSales).toLocaleString()}</td>
+      <td class="text-right font-semibold ${r.projInv30<0?'text-red-600':''}">${Math.round(r.projInv30).toLocaleString()}</td>
+      <td class="text-right font-semibold ${r.projInv60<0?'text-red-600':''}">${Math.round(r.projInv60).toLocaleString()}</td>
+      <td class="text-right font-semibold ${r.projInv90<0?'text-red-600':''}">${Math.round(r.projInv90).toLocaleString()}</td>
+      <td class="text-right font-semibold ${r.projInv<0?'text-red-600':r.wksLeft<4?'text-amber-600':'text-gray-700'}">${Math.round(r.projInv).toLocaleString()}</td>
+      <td class="text-right font-semibold ${r.projInv270<0?'text-red-600':'text-gray-700'}">${Math.round(r.projInv270).toLocaleString()}</td>
+      <td><span class="status-badge ${sbClass[r.status]}">${sbLabel[r.status]}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ─── PO MANAGER (read-only) ───────────────────────────────────────────────────
+function renderPOList() {
+  const c=document.getElementById('po-list-panel');
+  if(!purchaseOrders.length){c.innerHTML='<p class="text-sm text-gray-400 text-center py-8">No POs</p>';return;}
+  const bc={ordered:'badge-ordered',partial:'badge-partial',received:'badge-received'};
+  c.innerHTML=purchaseOrders.map(po=>{
+    const items=Object.values(po.lineItems||{}).filter(li=>(li.orderedQty||0)>0);
+    const total=items.reduce((s,li)=>s+(li.orderedQty||0),0);
+    return `<div class="po-card ${po.id===currentPOId?'selected':''}" data-po-id="${po.id}" onclick="openPOView(${po.id})">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-bold text-gray-800">${esc(po.poNumber||'Untitled PO')}</span>
+      </div>
+      <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+        <span class="text-xs font-semibold px-1.5 py-0.5 rounded capitalize ${bc[po.status]||'bg-gray-100 text-gray-600'}">${po.status}</span>
+        ${po.expectedDelivery?`<span class="text-xs text-gray-500">${fmtDate(po.expectedDelivery)}</span>`:'<span class="text-xs text-red-400">No date</span>'}
+      </div>
+      <div class="text-xs text-gray-400 mt-1">${items.length} SKU${items.length!==1?'s':''} · ${total} units</div>
+    </div>`;
+  }).join('');
+}
+
+function openPOView(id) {
+  currentPOId = id;
+  document.querySelectorAll('.po-card').forEach(el=>el.classList.toggle('selected',parseInt(el.dataset.poId)===id));
+  const po = purchaseOrders.find(p=>p.id===id); if(!po) return;
+  const bc={ordered:'badge-ordered',partial:'badge-partial',received:'badge-received'};
+
+  document.getElementById('vw-poNumber').textContent = po.poNumber||'Untitled';
+  document.getElementById('vw-expectedDelivery').textContent = po.expectedDelivery ? fmtDate(po.expectedDelivery) : '—';
+  document.getElementById('vw-notes').textContent = po.notes||'—';
+  const statusEl = document.getElementById('vw-status');
+  statusEl.textContent = po.status;
+  statusEl.className = `text-xs font-bold px-2 py-0.5 rounded capitalize ${bc[po.status]||'bg-gray-100 text-gray-600'}`;
+
+  const items = Object.values(po.lineItems||{}).filter(li=>(li.orderedQty||0)>0);
+  document.getElementById('vw-summary').textContent = `${items.length} SKUs · ${items.reduce((s,li)=>s+(li.orderedQty||0),0)} units`;
+
+  // Shipments
+  const ships = po.shipments||[];
+  const ssLabel={pending:'Pending', in_transit:'In Transit', received:'Received'};
+  const ssCls  ={pending:'ss-pending', in_transit:'ss-in_transit', received:'ss-received'};
+  const shipEl = document.getElementById('vw-shipments-list');
+  if (!ships.length) {
+    shipEl.innerHTML = '<p class="text-sm text-gray-400">No shipment batches recorded.</p>';
+  } else {
+    shipEl.innerHTML = ships.map(sh => {
+      const totalAlloc = Object.values(sh.skuQtys||{}).reduce((s,v)=>s+v,0);
+      const allocRows = Object.entries(sh.skuQtys||{}).filter(([,q])=>q>0).map(([k,q])=>{
+        const s = skuList.find(x=>x.key===k)||{title:k, variant:''};
+        return `<tr><td class="text-gray-700" style="padding:3px 6px;border-bottom:1px solid #f9fafb">${esc(s.title)}</td>
+          <td class="text-gray-500" style="padding:3px 6px;border-bottom:1px solid #f9fafb">${esc(s.variant)}</td>
+          <td class="text-right font-semibold text-purple-700" style="padding:3px 6px;border-bottom:1px solid #f9fafb">${q}</td></tr>`;
+      }).join('');
+      return `<div class="shipment-card">
+        <div class="shipment-header">
+          <span class="text-xs font-bold px-2 py-0.5 rounded ${ssCls[sh.status]||'ss-pending'}">${ssLabel[sh.status]||'Pending'}</span>
+          ${sh.tracking?`<span class="text-sm font-semibold text-gray-700">${esc(sh.tracking)}</span>`:'<span class="text-xs text-gray-400">No tracking</span>'}
+          ${sh.carrier?`<span class="text-xs text-gray-500">${esc(sh.carrier)}</span>`:''}
+          ${sh.expectedDelivery?`<span class="text-xs text-gray-500">ETA: <strong>${fmtDate(sh.expectedDelivery)}</strong></span>`:'<span class="text-xs text-red-400">No ETA</span>'}
+          <span class="text-xs text-gray-400 ml-auto">${totalAlloc} units</span>
+        </div>
+        ${sh.notes?`<div class="shipment-body text-xs text-gray-500">${esc(sh.notes)}</div>`:''}
+        ${allocRows?`<div class="shipment-body" style="padding-top:6px"><table class="alloc-table"><thead><tr>
+          <th>Product</th><th>Variant</th><th style="text-align:right">Qty</th>
+        </tr></thead><tbody>${allocRows}</tbody></table></div>`:''}
+      </div>`;
+    }).join('');
+  }
+
+  // Line items
+  const allSkus = skuList.length ? skuList : Object.keys(po.lineItems||{}).map(k=>{
+    const s=k.lastIndexOf(' / ');
+    return {key:k, title:s>=0?k.slice(0,s):k, variant:s>=0?k.slice(s+3):''};
+  });
+  const orderedSkus = allSkus.filter(s=>(po.lineItems?.[s.key]?.orderedQty||0)>0);
+  document.getElementById('vw-sku-tbody').innerHTML = orderedSkus.map(s=>{
+    const li=po.lineItems[s.key]||{};
+    const lastInv=(skuMap[s.key]||[]).at(-1)?.endingInventory??'—';
+    return `<tr style="background:#f9f6ff">
+      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;font-weight:500;color:#374151">${esc(s.title)}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;color:#6b7280">${esc(s.variant)}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;text-align:right;font-weight:600;color:#6b21a8">${li.orderedQty||0}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;text-align:right;color:#374151">${li.receivedQty||0}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;color:#6b7280">${li.receivedDate?fmtDate(li.receivedDate):'—'}</td>
+      <td style="padding:6px 12px;border-bottom:1px solid #f3f4f6;text-align:right;color:#6b7280">${lastInv}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" style="text-align:center;color:#9ca3af;padding:16px">No items ordered</td></tr>`;
+
+  document.getElementById('po-view-empty').classList.add('hidden');
+  document.getElementById('po-view').classList.remove('hidden');
+}
+
+// ─── BUSINESS PLANNING ────────────────────────────────────────────────────────
+function getBizMonths() {
+  const months = [];
+  const now = new Date();
+  for (let m = 0; m < 9; m++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + m, 1);
+    const start = d.toISOString().slice(0,10);
+    const endD = new Date(d.getFullYear(), d.getMonth()+1, 0);
+    const end   = endD.toISOString().slice(0,10);
+    const label = d.toLocaleDateString('en-US',{month:'short',year:'numeric'});
+    months.push({label, start, end});
+  }
+  return months;
+}
+
+function renderBizPlanning() {
+  if (!skuList.length) return;
+  const months = getBizMonths();
+  const thStyle = 'background:#f8f7fa;color:#6b7280;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:8px 12px;border-bottom:2px solid #e5e7eb;text-align:right;white-space:nowrap;';
+  const thStyleL = thStyle.replace('text-align:right','text-align:left');
+  const tdStyle = 'padding:7px 12px;border-bottom:1px solid #f3f4f6;text-align:right;';
+  const tdStyleL = tdStyle.replace('text-align:right','text-align:left');
+  const search = (document.getElementById('biz-sku-search')?.value||'').toLowerCase();
+  const today = new Date().toISOString().slice(0,10);
+  const mSold    = months.map(()=>0);
+  const mIncoming= months.map(()=>0);
+  let totalStartInv = 0;
+  skuList.forEach(s => {
+    const rows = skuMap[s.key]||[];
+    totalStartInv += rows.length ? (rows[rows.length-1].endingInventory||0) : 0;
+  });
+  const skuMonthlySold = {};
+  skuList.forEach(s => {
+    const rows = skuMap[s.key]||[];
+    const lastRow = rows.length ? rows[rows.length-1] : null;
+    const lastWeek = lastRow ? lastRow.week : today;
+    const pos = getPOsForSKU(s.key);
+    skuMonthlySold[s.key] = months.map(()=>0);
+    for (let wi = 0; wi < 39; wi++) {
+      const ws = addDays(lastWeek, wi*7);
+      const we = addDays(lastWeek, (wi+1)*7);
+      const demand = getWeeklyDemandForSKU(s.key, wi)||0;
+      const poQ = pos.filter(p=>p.date>=ws&&p.date<we).reduce((sum,p)=>sum+p.qty,0);
+      months.forEach((mo, mi) => {
+        if (ws >= mo.start && ws <= mo.end) {
+          mSold[mi] += demand;
+          mIncoming[mi] += poQ;
+          skuMonthlySold[s.key][mi] += demand;
+        }
+      });
+    }
+  });
+  const mEndInv = [];
+  let runInv = totalStartInv;
+  for (let mi = 0; mi < 9; mi++) {
+    runInv = runInv + mIncoming[mi] - mSold[mi];
+    mEndInv.push(runInv);
+  }
+  document.getElementById('biz-total-inv').textContent = Math.round(totalStartInv).toLocaleString();
+  const totalIncoming = skuList.reduce((sum,s)=>sum+getPOsForSKU(s.key).reduce((s2,p)=>s2+p.qty,0),0);
+  document.getElementById('biz-total-incoming').textContent = '+'+Math.round(totalIncoming).toLocaleString();
+  document.getElementById('biz-total-sold').textContent = Math.round(mSold.reduce((a,b)=>a+b,0)).toLocaleString();
+  document.getElementById('biz-end-inv').textContent = Math.round(mEndInv[8]).toLocaleString();
+  if (bizChart) bizChart.destroy();
+  bizChart = new Chart(document.getElementById('biz-chart'), {
+    data: {
+      labels: months.map(m=>m.label),
+      datasets: [
+        { type:'bar',  label:'Units Sold',           data:mSold.map(v=>Math.round(v)),     backgroundColor:'rgba(139,92,246,0.55)', borderColor:'#7c3aed', borderWidth:1, borderRadius:4, order:2 },
+        { type:'bar',  label:'PO Arrivals',           data:mIncoming.map(v=>Math.round(v)), backgroundColor:'rgba(34,197,94,0.45)', borderColor:'#16a34a', borderWidth:1, borderRadius:4, order:3 },
+        { type:'line', label:'End-of-Month Inventory',data:mEndInv.map(v=>Math.round(v)),  borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,0.07)', borderWidth:2.5, pointRadius:4, fill:true, tension:0.3, order:1, yAxisID:'y2' },
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:true,position:'top',labels:{font:{size:11},usePointStyle:true,boxWidth:16}},
+        tooltip:{callbacks:{label:c=>c.raw==null?null:`${c.dataset.label}: ${c.raw.toLocaleString()} units`}}},
+      scales:{
+        x:{ grid:{display:false}, ticks:{font:{size:11}} },
+        y:{ grid:{color:'#f0f0f0'}, beginAtZero:true, ticks:{font:{size:11}}, title:{display:true,text:'Units',font:{size:11},color:'#9ca3af'} },
+        y2:{ position:'right', grid:{display:false}, ticks:{font:{size:11},color:'#3b82f6'}, title:{display:true,text:'Inventory',font:{size:11},color:'#3b82f6'} }
+      }
+    }
+  });
+  const hdr = document.getElementById('biz-month-headers');
+  hdr.innerHTML = `<th style="${thStyleL}">Metric</th>` + months.map(m=>`<th style="${thStyle}">${m.label}</th>`).join('');
+  const fmtN = v => Math.round(v).toLocaleString();
+  document.getElementById('biz-table-body').innerHTML = [
+    { label:'Units Sold',            vals:mSold,    style:()=>'color:#6b7280' },
+    { label:'PO Arrivals',           vals:mIncoming,style:v=>`color:${v>0?'#16a34a':'#d1d5db'};font-weight:${v>0?600:400}` },
+    { label:'End-of-Month Inventory',vals:mEndInv,  style:v=>v<0?'color:#dc2626;font-weight:700':v<500?'color:#b45309;font-weight:600':'color:#1f2937;font-weight:600' },
+  ].map(row=>`<tr>
+    <td style="${tdStyleL}font-weight:600;color:#374151">${row.label}</td>
+    ${row.vals.map((v)=>`<td style="${tdStyle}${row.style(v)}">${fmtN(v)}</td>`).join('')}
+  </tr>`).join('');
+  const skuHdr = document.getElementById('biz-sku-headers');
+  skuHdr.innerHTML = `<th style="${thStyleL}width:28%">Product</th><th style="${thStyleL}width:14%">Variant</th>` + months.map(m=>`<th style="${thStyle}">${m.label}</th>`).join('');
+  const filteredSkus = skuList.filter(s => !search || (s.title+' '+s.variant).toLowerCase().includes(search));
+  document.getElementById('biz-sku-body').innerHTML = filteredSkus.map(s => {
+    const vals = skuMonthlySold[s.key]||months.map(()=>0);
+    const hasAny = vals.some(v=>v>0.05);
+    return `<tr style="${hasAny?'':'color:#d1d5db'}">
+      <td style="${tdStyleL}font-weight:500;color:${hasAny?'#374151':'#d1d5db'}">${esc(s.title)}</td>
+      <td style="${tdStyleL}color:#6b7280">${esc(s.variant)}</td>
+      ${vals.map(v=>`<td style="${tdStyle}${v>0.05?'color:#6b21a8;font-weight:600':'color:#d1d5db'}">${v>0.05?Math.round(v).toLocaleString():'—'}</td>`).join('')}
+    </tr>`;
+  }).join('') || `<tr><td colspan="${2+9}" style="text-align:center;color:#9ca3af;padding:20px">No SKUs match</td></tr>`;
+}
+
+// ─── BOOT ─────────────────────────────────────────────────────────────────────
+document.getElementById('proj-weeks-label').textContent = '16';
+loadData();
+</script>
+</body>
+</html>
